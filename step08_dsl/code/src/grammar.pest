@@ -1,0 +1,16 @@
+// TODO(dkorolev): Ban tabs =)
+WHITESPACE = _{ " " | "\t" | "\n" | "\r\n" }
+
+COMMENT = _{ COMMENT_LINE | COMMENT_BLOCK }
+COMMENT_LINE = _{ "//" ~ (!NEWLINE ~ ANY)* }
+COMMENT_BLOCK = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+TYPE_DEFINITION = { "TYPE" ~ IDENTIFIER ~ "{" ~ FIELD_DEFINITION* ~ "}" }
+FIELD_DEFINITION = { IDENTIFIER ~ TYPE_NAME }
+
+IDENTIFIER = @{ !KEYWORD ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+TYPE_NAME = { "U64" | "STR" }
+
+KEYWORD = _{ "TYPE" | "U64" | "STR" }
+
+TOPLEVEL = { SOI ~ TYPE_DEFINITION* ~ EOI }
