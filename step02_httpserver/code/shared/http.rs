@@ -21,7 +21,7 @@ pub struct DataHtmlTemplate<'a> {
   raw_json_as_string: &'a str,
 }
 
-const SAMPLE_JSON: &str = include_str!("sample.json");
+const SAMPLE_JSON: &str = include_str!("../src/sample.json");
 
 async fn json_or_html(headers: HeaderMap) -> impl IntoResponse {
   let raw_json_as_string = SAMPLE_JSON;

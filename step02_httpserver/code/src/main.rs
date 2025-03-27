@@ -1,6 +1,6 @@
-mod server;
+use shared::http;
 
 #[tokio::main]
 async fn main() {
-  server::run_server().await;
+  http::run_server().await;
 }

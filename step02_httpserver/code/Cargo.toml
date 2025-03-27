@@ -9,3 +9,11 @@ hyper = { version = "1", features = ["server", "http1"] }
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.4", features = ["util"] }
 mime = "0.3"
+
+[[bin]]
+name = "httpserver"
+path = "src/main.rs"
+
+[lib]
+name = "shared"
+path = "shared/lib.rs"
