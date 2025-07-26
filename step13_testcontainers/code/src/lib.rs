@@ -1,9 +1,12 @@
 #[cfg(test)]
 mod tests {
-  use anyhow::Result;
+  use anyhow::{Result, anyhow};
+  use futures_util::StreamExt;
   use redis::AsyncCommands;
+  use std::time::Duration;
   use testcontainers::{Container, clients};
   use testcontainers_modules::redis::Redis;
+  use tokio::time::timeout;
 
   fn get_redis_url(container: &Container<Redis>) -> String {
     let port = container.get_host_port_ipv4(6379);
@@ -24,6 +27,183 @@ mod tests {
 
     assert_eq!(val, "test_value");
     println!("Redis set/get test passed! Got value: {}", val);
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_pubsub_basic() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.subscribe("test_channel").await?;
+
+    let publish_task = tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      let _: i32 = publisher.publish("test_channel", "hello world").await.unwrap();
+    });
+
+    let mut stream = pubsub.on_message();
+    let message = timeout(Duration::from_secs(5), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+    assert_eq!(message.get_channel_name(), "test_channel");
+    assert_eq!(message.get_payload::<String>()?, "hello world");
+
+    publish_task.await?;
+    println!("Redis pub-sub basic test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_pubsub_multiple_messages() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.subscribe("multi_channel").await?;
+
+    let messages = vec!["message1", "message2", "message3"];
+    let expected_messages = messages.clone();
+
+    let publish_task = tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      for msg in messages {
+        let _: i32 = publisher.publish("multi_channel", msg).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+      }
+    });
+
+    let mut received_messages = Vec::new();
+    let mut stream = pubsub.on_message();
+    for _ in 0..3 {
+      let message = timeout(Duration::from_secs(5), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+      received_messages.push(message.get_payload::<String>()?);
+    }
+
+    publish_task.await?;
+    assert_eq!(received_messages, expected_messages);
+    println!("Redis pub-sub multiple messages test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_pubsub_multiple_channels() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.subscribe("channel1").await?;
+    pubsub.subscribe("channel2").await?;
+
+    let publish_task = tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      let _: i32 = publisher.publish("channel1", "message_ch1").await.unwrap();
+      let _: i32 = publisher.publish("channel2", "message_ch2").await.unwrap();
+    });
+
+    let mut received_messages = Vec::new();
+    let mut stream = pubsub.on_message();
+    for _ in 0..2 {
+      let message = timeout(Duration::from_secs(5), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+      received_messages.push((message.get_channel_name().to_string(), message.get_payload::<String>()?));
+    }
+
+    publish_task.await?;
+    received_messages.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(received_messages[0], ("channel1".to_string(), "message_ch1".to_string()));
+    assert_eq!(received_messages[1], ("channel2".to_string(), "message_ch2".to_string()));
+    println!("Redis pub-sub multiple channels test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_pubsub_pattern_subscription() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.psubscribe("test_*").await?;
+
+    let publish_task = tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(100)).await;
+      let _: i32 = publisher.publish("test_pattern1", "pattern_message1").await.unwrap();
+      let _: i32 = publisher.publish("test_pattern2", "pattern_message2").await.unwrap();
+      let _: i32 = publisher.publish("other_channel", "should_not_receive").await.unwrap();
+    });
+
+    let mut received_messages = Vec::new();
+    let mut stream = pubsub.on_message();
+    for _ in 0..2 {
+      let message = timeout(Duration::from_secs(5), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+      received_messages.push((message.get_channel_name().to_string(), message.get_payload::<String>()?));
+    }
+
+    publish_task.await?;
+    received_messages.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(received_messages.len(), 2);
+    assert_eq!(received_messages[0], ("test_pattern1".to_string(), "pattern_message1".to_string()));
+    assert_eq!(received_messages[1], ("test_pattern2".to_string(), "pattern_message2".to_string()));
+    println!("Redis pub-sub pattern subscription test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_pubsub_unsubscribe() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.subscribe("unsub_channel").await?;
+
+    let _: i32 = publisher.publish("unsub_channel", "before_unsub").await?;
+    {
+      let mut stream = pubsub.on_message();
+      let message = timeout(Duration::from_secs(2), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+      assert_eq!(message.get_payload::<String>()?, "before_unsub");
+    }
+
+    pubsub.unsubscribe("unsub_channel").await?;
+
+    let _: i32 = publisher.publish("unsub_channel", "after_unsub").await?;
+
+    {
+      let mut stream = pubsub.on_message();
+      let result = timeout(Duration::from_millis(500), stream.next()).await;
+      assert!(result.is_err(), "Should not receive message after unsubscribe");
+    }
+
+    println!("Redis pub-sub unsubscribe test passed!");
     Ok(())
   }
 }

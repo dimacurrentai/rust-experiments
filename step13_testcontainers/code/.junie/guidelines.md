@@ -9,6 +9,7 @@ Keep Rust edition at 2024 in `Cargo.toml`.
 Only make small, self-contained changes.
 Make sure they are readable and understood in isolation -- with no comments, from the code alone!
 Do not add doctests for the sake of adding doctests, although if a standalone function calls for a doctest -- do add it!
+Feel free to use `cargo doc` to examine the docs, but do not add `--open` to `cargo doc`!
 
 # Before Committing
 
