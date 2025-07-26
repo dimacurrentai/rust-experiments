@@ -1,5 +1,6 @@
 # High-level
 
+Never remove existing tests, or the logic from them -- your job is to make existing tests build and pass if they fail to.
 Write no comments, keep the code self-descriptive.
 Respect Rust formatting rules in `../../rustfmt.toml`. No need to bring this `rustfmt.toml` into this project's directory from `../../`.
 Keep Rust edition at 2024 in `Cargo.toml`.
