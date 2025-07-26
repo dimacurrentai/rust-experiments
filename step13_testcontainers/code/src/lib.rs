@@ -1,65 +1,71 @@
+use anyhow::Result;
+use std::sync::LazyLock;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+const PUBLISH_SCRIPT: &str = r#"
+  local channel = ARGV[1]
+  local message = ARGV[2]
+  
+  local existing_id = redis.call('HGET', 'msg_content_to_id', message)
+  if existing_id then
+    return existing_id
+  end
+  
+  local id = redis.call('INCR', 'msg_counter')
+  local key = 'msg:' .. id
+  redis.call('SET', key, message)
+  redis.call('HSET', 'msg_content_to_id', message, tostring(id))
+  redis.call('PUBLISH', channel, message)
+  return tostring(id)
+"#;
+
+static SCRIPT_SHA: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+
+pub async fn create_redis_client(redis_url: &str) -> Result<redis::Client> {
+  Ok(redis::Client::open(redis_url)?)
+}
+
+pub async fn publish_with_persistence(
+  connection: &mut redis::aio::MultiplexedConnection, channel: &str, message: &str,
+) -> Result<String> {
+  loop {
+    let sha = match { SCRIPT_SHA.lock().await.clone() } {
+      Some(cached_sha) => cached_sha,
+      None => {
+        let sha = redis::cmd("SCRIPT").arg("LOAD").arg(PUBLISH_SCRIPT).query_async::<String>(connection).await?;
+        *SCRIPT_SHA.lock().await = Some(sha.clone());
+        sha
+      }
+    };
+
+    match redis::cmd("EVALSHA").arg(&sha).arg(0).arg(channel).arg(message).query_async::<String>(connection).await {
+      Ok(result) => return Ok(result),
+      Err(e) => {
+        if e.to_string().contains("NoScriptError") {
+          *SCRIPT_SHA.lock().await = None;
+          tokio::time::sleep(Duration::from_millis(500)).await;
+          continue;
+        }
+        return Err(e.into());
+      }
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use anyhow::{Result, anyhow};
+  use super::*;
+  use anyhow::anyhow;
   use futures_util::StreamExt;
   use redis::AsyncCommands;
-  use std::sync::LazyLock;
-  use std::time::Duration;
   use testcontainers::{Container, clients};
   use testcontainers_modules::redis::Redis;
-  use tokio::sync::Mutex;
   use tokio::time::timeout;
-
-  const PUBLISH_SCRIPT: &str = r#"
-    local channel = ARGV[1]
-    local message = ARGV[2]
-    
-    local existing_id = redis.call('HGET', 'msg_content_to_id', message)
-    if existing_id then
-      return existing_id
-    end
-    
-    local id = redis.call('INCR', 'msg_counter')
-    local key = 'msg:' .. id
-    redis.call('SET', key, message)
-    redis.call('HSET', 'msg_content_to_id', message, tostring(id))
-    redis.call('PUBLISH', channel, message)
-    return tostring(id)
-  "#;
-
-  static SCRIPT_SHA: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
   fn get_redis_url(container: &Container<Redis>) -> String {
     let port = container.get_host_port_ipv4(6379);
     format!("redis://127.0.0.1:{}", port)
-  }
-
-  async fn publish_with_persistence(
-    connection: &mut redis::aio::MultiplexedConnection, channel: &str, message: &str,
-  ) -> Result<String> {
-    loop {
-      let sha = match { SCRIPT_SHA.lock().await.clone() } {
-        Some(cached_sha) => cached_sha,
-        None => {
-          let sha: String =
-            redis::cmd("SCRIPT").arg("LOAD").arg(PUBLISH_SCRIPT).query_async::<String>(connection).await?;
-          *SCRIPT_SHA.lock().await = Some(sha.clone());
-          sha
-        }
-      };
-
-      match redis::cmd("EVALSHA").arg(&sha).arg(0).arg(channel).arg(message).query_async::<String>(connection).await {
-        Ok(result) => return Ok(result),
-        Err(e) => {
-          if e.to_string().contains("NoScriptError") {
-            *SCRIPT_SHA.lock().await = None;
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            continue;
-          }
-          return Err(e.into());
-        }
-      }
-    }
   }
 
   #[tokio::test]
