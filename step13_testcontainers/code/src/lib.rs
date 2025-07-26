@@ -3,14 +3,34 @@ mod tests {
   use anyhow::{Result, anyhow};
   use futures_util::StreamExt;
   use redis::AsyncCommands;
+  use std::sync::LazyLock;
   use std::time::Duration;
   use testcontainers::{Container, clients};
   use testcontainers_modules::redis::Redis;
   use tokio::time::timeout;
 
+  static PUBLISH_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+      r#"
+      local id = redis.call('INCR', 'msg_counter')
+      local key = 'msg:' .. id
+      redis.call('SET', key, ARGV[2])
+      redis.call('PUBLISH', ARGV[1], ARGV[2])
+      return tostring(id)
+    "#,
+    )
+  });
+
   fn get_redis_url(container: &Container<Redis>) -> String {
     let port = container.get_host_port_ipv4(6379);
     format!("redis://127.0.0.1:{}", port)
+  }
+
+  async fn publish_with_persistence(
+    connection: &mut redis::aio::MultiplexedConnection, channel: &str, message: &str,
+  ) -> Result<String> {
+    let id: String = PUBLISH_SCRIPT.arg(channel).arg(message).invoke_async(connection).await?;
+    Ok(id)
   }
 
   #[tokio::test]
@@ -46,7 +66,7 @@ mod tests {
 
     let publish_task = tokio::spawn(async move {
       tokio::time::sleep(Duration::from_millis(100)).await;
-      let _: i32 = publisher.publish("test_channel", "hello world").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "test_channel", "hello world").await.unwrap();
     });
 
     let mut stream = pubsub.on_message();
@@ -79,7 +99,7 @@ mod tests {
     let publish_task = tokio::spawn(async move {
       tokio::time::sleep(Duration::from_millis(100)).await;
       for msg in messages {
-        let _: i32 = publisher.publish("multi_channel", msg).await.unwrap();
+        let _ = publish_with_persistence(&mut publisher, "multi_channel", msg).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
       }
     });
@@ -114,8 +134,8 @@ mod tests {
 
     let publish_task = tokio::spawn(async move {
       tokio::time::sleep(Duration::from_millis(100)).await;
-      let _: i32 = publisher.publish("channel1", "message_ch1").await.unwrap();
-      let _: i32 = publisher.publish("channel2", "message_ch2").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "channel1", "message_ch1").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "channel2", "message_ch2").await.unwrap();
     });
 
     let mut received_messages = Vec::new();
@@ -150,9 +170,9 @@ mod tests {
 
     let publish_task = tokio::spawn(async move {
       tokio::time::sleep(Duration::from_millis(100)).await;
-      let _: i32 = publisher.publish("test_pattern1", "pattern_message1").await.unwrap();
-      let _: i32 = publisher.publish("test_pattern2", "pattern_message2").await.unwrap();
-      let _: i32 = publisher.publish("other_channel", "should_not_receive").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "test_pattern1", "pattern_message1").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "test_pattern2", "pattern_message2").await.unwrap();
+      let _ = publish_with_persistence(&mut publisher, "other_channel", "should_not_receive").await.unwrap();
     });
 
     let mut received_messages = Vec::new();
@@ -186,7 +206,7 @@ mod tests {
 
     pubsub.subscribe("unsub_channel").await?;
 
-    let _: i32 = publisher.publish("unsub_channel", "before_unsub").await?;
+    let _ = publish_with_persistence(&mut publisher, "unsub_channel", "before_unsub").await?;
     {
       let mut stream = pubsub.on_message();
       let message = timeout(Duration::from_secs(2), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
@@ -195,7 +215,7 @@ mod tests {
 
     pubsub.unsubscribe("unsub_channel").await?;
 
-    let _: i32 = publisher.publish("unsub_channel", "after_unsub").await?;
+    let _ = publish_with_persistence(&mut publisher, "unsub_channel", "after_unsub").await?;
 
     {
       let mut stream = pubsub.on_message();
@@ -204,6 +224,33 @@ mod tests {
     }
 
     println!("Redis pub-sub unsubscribe test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_message_persistence() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url.clone())?;
+    let publisher_client = redis::Client::open(redis_url)?;
+
+    let mut pubsub = client.get_async_pubsub().await?;
+    let mut publisher = publisher_client.get_multiplexed_async_connection().await?;
+
+    pubsub.subscribe("persist_channel").await?;
+
+    let message_id = publish_with_persistence(&mut publisher, "persist_channel", "test_message").await?;
+
+    let mut stream = pubsub.on_message();
+    let message = timeout(Duration::from_secs(5), stream.next()).await?.ok_or_else(|| anyhow!("timeout"))?;
+    assert_eq!(message.get_payload::<String>()?, "test_message");
+
+    let stored_message: String = publisher.get(format!("msg:{}", message_id)).await?;
+    assert_eq!(stored_message, "test_message");
+
+    println!("Redis message persistence test passed! Message ID: {}", message_id);
     Ok(())
   }
 }
