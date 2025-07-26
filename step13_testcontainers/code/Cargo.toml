@@ -6,6 +6,10 @@ edition = "2024"
 name = "redis_publisher"
 path = "src/publish.rs"
 
+[[bin]]
+name = "redis_subscriber"
+path = "src/subscribe.rs"
+
 [dependencies]
 redis = { version = "0.29.2", features = ["tokio-comp"] }
 tokio = { version = "1", features = ["full"] }
