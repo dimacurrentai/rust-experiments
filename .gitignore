@@ -1,8 +1,10 @@
 Cargo.lock
 target/
 
+.idea/
 .vscode/
 .*.swp
+.!*
 
 # Using the `Dockerfile.template` in the root directory now.
 Dockerfile
