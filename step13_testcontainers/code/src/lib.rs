@@ -16,6 +16,18 @@ const PUBLISH_SCRIPT: &str = r#"
   local key = 'msg:' .. id
   redis.call('SET', key, message)
   redis.call('HSET', 'msg_content_to_id', message, tostring(id))
+  
+  local stored_count = redis.call('HLEN', 'msg_content_to_id')
+  if stored_count > 25 then
+    local oldest_id = id - 25
+    local oldest_key = 'msg:' .. oldest_id
+    local oldest_message = redis.call('GET', oldest_key)
+    if oldest_message then
+      redis.call('DEL', oldest_key)
+      redis.call('HDEL', 'msg_content_to_id', oldest_message)
+    end
+  end
+  
   redis.call('PUBLISH', channel, message)
   return tostring(id)
 "#;
@@ -356,6 +368,104 @@ mod tests {
     assert_eq!(received_messages, vec!["message1", "message2", "message3"]);
 
     println!("Redis different messages unique IDs test passed! IDs: {}, {}, {}", id1, id2, id3);
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_idempotency_with_eviction() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url)?;
+    let mut publisher = client.get_multiplexed_async_connection().await?;
+
+    let test_message = "test_message_for_eviction";
+
+    let first_id = publish_with_persistence(&mut publisher, "idempotency_channel", test_message).await?;
+    let duplicate_id = publish_with_persistence(&mut publisher, "idempotency_channel", test_message).await?;
+
+    assert_eq!(first_id, duplicate_id, "Duplicate message should return same ID");
+    println!("Idempotency confirmed: message '{}' got ID {} both times", test_message, first_id);
+
+    println!("Publishing 25 different messages to trigger eviction...");
+    for i in 1..=25 {
+      let filler_message = format!("filler_message_{}", i);
+      publish_with_persistence(&mut publisher, "idempotency_channel", &filler_message).await?;
+    }
+
+    let hash_size: usize = publisher.hlen("msg_content_to_id").await?;
+    assert_eq!(hash_size, 25, "Hash should contain exactly 25 entries after eviction");
+
+    let evicted_check: Option<String> = publisher.hget("msg_content_to_id", test_message).await?;
+    assert!(evicted_check.is_none(), "Original message should be evicted from idempotency hash");
+
+    let new_id = publish_with_persistence(&mut publisher, "idempotency_channel", test_message).await?;
+    assert_ne!(first_id, new_id, "Evicted message should get new ID when republished");
+
+    println!("Eviction confirmed: message '{}' got new ID {} after eviction (was {})", test_message, new_id, first_id);
+
+    let final_duplicate_id = publish_with_persistence(&mut publisher, "idempotency_channel", test_message).await?;
+    assert_eq!(new_id, final_duplicate_id, "Republished message should maintain idempotency");
+
+    println!("Redis idempotency with eviction test passed!");
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn test_redis_message_eviction_25_limit() -> Result<()> {
+    let docker = clients::Cli::default();
+    let redis_container = docker.run(Redis::default());
+    let redis_url = get_redis_url(&redis_container);
+
+    let client = redis::Client::open(redis_url)?;
+    let mut publisher = client.get_multiplexed_async_connection().await?;
+
+    println!("Publishing 30 messages to test 25-element limit...");
+    let mut message_ids = Vec::new();
+
+    for i in 1..=30 {
+      let message = format!("test_message_{}", i);
+      let id = publish_with_persistence(&mut publisher, "eviction_channel", &message).await?;
+      message_ids.push((id.parse::<i32>()?, message));
+    }
+
+    let counter: i32 = publisher.get("msg_counter").await?;
+    assert_eq!(counter, 30, "Message counter should be 30");
+
+    let hash_size: usize = publisher.hlen("msg_content_to_id").await?;
+    assert_eq!(hash_size, 25, "Idempotency hash should contain exactly 25 entries");
+
+    println!("Verifying that only the last 25 messages are stored...");
+    for (id, message) in &message_ids {
+      let key = format!("msg:{}", id);
+      let stored_message: Option<String> = publisher.get(&key).await?;
+
+      if *id <= 5 {
+        assert!(stored_message.is_none(), "Message {} should have been evicted", id);
+      } else {
+        assert_eq!(stored_message.as_ref(), Some(message), "Message {} should be stored", id);
+      }
+    }
+
+    println!("Verifying idempotency hash contains only the last 25 messages...");
+    let hash_contents: Vec<(String, String)> = publisher.hgetall("msg_content_to_id").await?;
+    assert_eq!(hash_contents.len(), 25, "Hash should contain exactly 25 entries");
+
+    for (stored_message, stored_id) in hash_contents {
+      let id = stored_id.parse::<i32>()?;
+      assert!(id > 5, "Only messages with ID > 5 should be in hash, found ID {}", id);
+      assert_eq!(stored_message, format!("test_message_{}", id), "Hash entry should match expected message");
+    }
+
+    println!("Verifying random access works for retained messages...");
+    for id in 6..=30 {
+      let key = format!("msg:{}", id);
+      let stored_message: String = publisher.get(&key).await?;
+      assert_eq!(stored_message, format!("test_message_{}", id), "Random access failed for message {}", id);
+    }
+
+    println!("Redis message eviction 25-limit test passed!");
     Ok(())
   }
 }
