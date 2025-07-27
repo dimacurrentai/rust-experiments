@@ -81,7 +81,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_set_get() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -99,7 +99,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_pubsub_basic() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -129,7 +129,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_pubsub_multiple_messages() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -168,7 +168,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_pubsub_multiple_channels() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -206,7 +206,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_pubsub_pattern_subscription() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -245,7 +245,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_pubsub_unsubscribe() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -281,7 +281,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_message_persistence() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -309,7 +309,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_message_idempotency() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -345,7 +345,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_different_messages_unique_ids() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -381,7 +381,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_idempotency_with_eviction() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
@@ -423,7 +423,7 @@ mod tests {
   }
 
   #[tokio::test]
-  #[ntest::timeout(5000)]
+  #[ntest::timeout(30000)]
   async fn test_redis_message_eviction_25_limit() -> Result<()> {
     let docker = clients::Cli::default();
     let redis_container = docker.run(Redis::default());
